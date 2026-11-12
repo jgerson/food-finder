@@ -1,9 +1,15 @@
 "use client";
 import { UserButton } from "@clerk/nextjs";
+import { Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { COURSES, COURSE_LABELS, type Course } from "@/lib/courses";
 import { useClip } from "@/lib/use-clip";
-import type { SearchResult } from "@/lib/search";
+import type { Hit, SearchResult } from "@/lib/search";
+import type { Cited, ScreenContext } from "@/lib/copilot";
+import { HitPanel, RunPanel, type QueryKind } from "@/components/explain";
+import { Copilot } from "@/components/copilot";
+
+type Panel = { kind: "run" } | { kind: "hit"; hit: Hit } | { kind: "copilot" } | null;
 
 type Query =
   | { kind: "text"; text: string; vector: number[] }
@@ -22,17 +28,23 @@ export default function FoodFinder() {
   const [busy, setBusy] = useState<"embedding" | "searching" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [panel, setPanel] = useState<Panel>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const embedMsRef = useRef<number | null>(null);
 
   const run = useCallback(async (q: Query, c: Course | null) => {
     setBusy("searching");
     setError(null);
     try {
-      const body = q.kind === "similar" ? { id: q.id, course: c } : { vector: q.vector, course: c };
+      // `query` describes the search for the trace in Langfuse; the vector is never recorded there.
+      const query = q.kind === "similar" ? { kind: "similar" } : q.kind === "text" ? { kind: "text", text: q.text, embedMs: embedMsRef.current } : { kind: "photo", embedMs: embedMsRef.current };
+      const body = q.kind === "similar" ? { id: q.id, course: c, query } : { vector: q.vector, course: c, query };
       const res = await fetch("/api/search", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Search failed (${res.status})`);
       setResult(data);
+      // A selected photo belongs to the old results; show how the new search ran instead.
+      setPanel((p) => (p?.kind === "hit" ? { kind: "run" } : p));
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -49,6 +61,7 @@ export default function FoodFinder() {
     try {
       const { vector, ms } = await embedText(q);
       setEmbedMs(ms);
+      embedMsRef.current = ms;
       const next: Query = { kind: "text", text: q, vector };
       setQuery(next);
       await run(next, course);
@@ -65,6 +78,7 @@ export default function FoodFinder() {
     try {
       const { vector, ms } = await embedImage(file);
       setEmbedMs(ms);
+      embedMsRef.current = ms;
       const next: Query = { kind: "image", preview: URL.createObjectURL(file), vector };
       setQuery((prev) => { if (prev?.kind === "image") URL.revokeObjectURL(prev.preview); return next; });
       setText("");
@@ -79,6 +93,7 @@ export default function FoodFinder() {
     const next: Query = { kind: "similar", id, dish, url };
     setQuery(next);
     setEmbedMs(null);
+    embedMsRef.current = null;
     void run(next, course);
   };
 
@@ -105,8 +120,18 @@ export default function FoodFinder() {
     if (file) void searchImage(file);
   };
 
+  // What the copilot sees: the search on screen and its top 12 results.
+  const screen: ScreenContext | null = query && result ? {
+    query: query.kind === "text" ? `the text "${query.text}"` : query.kind === "image" ? "a photo the user uploaded" : `more like a photo of ${query.dish}`,
+    course,
+    guess: result.guess?.dish ?? null,
+    hits: result.hits.slice(0, 12).map((h) => ({ id: h.id, dish: h.dish, url: h.url, similarity: h.similarity })),
+  } : null;
+  const kind: QueryKind = query?.kind === "image" ? "photo" : query?.kind === "similar" ? "similar" : "text";
+  const explainBody = query?.kind === "similar" ? { id: query.id, course } : query ? { vector: query.vector, course } : {};
+
   return (
-    <main className="mx-auto max-w-6xl px-5 pb-16 pt-10">
+    <main className={`mx-auto px-5 pb-16 pt-10 ${panel ? "max-w-[1400px]" : "max-w-6xl"}`}>
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-5xl leading-none text-ink">Food Finder</h1>
@@ -117,10 +142,16 @@ export default function FoodFinder() {
         </div>
         <div className="flex items-center gap-3">
           <ModelBadge model={model} />
+          <button onClick={() => setPanel((p) => (p?.kind === "copilot" ? null : { kind: "copilot" }))} aria-pressed={panel?.kind === "copilot"}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${panel?.kind === "copilot" ? "border-ink bg-ink text-paper" : "border-line-2 text-ink-2 hover:border-ink"}`}>
+            <Sparkles size={13} />Copilot
+          </button>
           <UserButton />
         </div>
       </header>
 
+      <div className={panel ? "lg:grid lg:grid-cols-[minmax(0,1fr)_420px] lg:items-start lg:gap-8" : ""}>
+      <div>
       <section className="mt-8 grid gap-3 md:grid-cols-[1fr_auto]">
         <form onSubmit={onSubmit} className="flex gap-2">
           <input
@@ -180,27 +211,56 @@ export default function FoodFinder() {
 
       {(query || busy) && (
         <section className="mt-8">
-          <QuerySummary query={query} busy={busy} model={model} embedMs={embedMs} result={result} />
+          <QuerySummary query={query} busy={busy} model={model} embedMs={embedMs} result={result}
+            onExplain={() => setPanel({ kind: "run" })} />
           {result && result.hits.length === 0 && !busy && (
             <p className="mt-6 text-slate">No matches. Is the dataset loaded? Run <code>npm run ingest</code>.</p>
           )}
-          <ul className={`mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 ${busy === "searching" ? "opacity-50" : ""}`}>
+          <ul className={`mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 ${panel ? "xl:grid-cols-3" : "lg:grid-cols-4"} ${busy === "searching" ? "opacity-50" : ""}`}>
             {result?.hits.map((h, i) => (
-              <li key={h.id} className="group overflow-hidden rounded-xl border border-line bg-surface">
-                <button onClick={() => moreLikeThis(h.id, h.dish, h.url)} className="block w-full text-left" title="More like this">
+              <li key={h.id} className={`overflow-hidden rounded-xl border bg-surface ${panel?.kind === "hit" && panel.hit.id === h.id ? "border-ink" : "border-line"}`}>
+                <button onClick={() => setPanel({ kind: "hit", hit: h })} className="block w-full text-left" title="Why did this rank here?">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={h.url} alt={h.dish} loading={i < 8 ? "eager" : "lazy"} className="aspect-square w-full object-cover" />
-                  <div className="flex items-baseline justify-between gap-2 px-3 py-2.5">
+                  <div className="flex items-baseline justify-between gap-2 px-3 pt-2.5">
                     <span className="truncate font-medium text-ink">{h.dish}</span>
-                    <span className="shrink-0 font-mono text-xs text-slate" title="Cosine similarity">{(h.similarity * 100).toFixed(0)}%</span>
+                    <span className="shrink-0 font-mono text-xs text-slate" title="Cosine similarity">{h.similarity.toFixed(3)}</span>
                   </div>
-                  <div className="px-3 pb-3 text-xs text-slate group-hover:text-ink">More like this →</div>
                 </button>
+                <div className="flex justify-between px-3 pb-3 pt-1 text-xs">
+                  <button onClick={() => setPanel({ kind: "hit", hit: h })} className="text-slate hover:text-ink">Why #{h.rank}?</button>
+                  <button onClick={() => moreLikeThis(h.id, h.dish, h.url)} className="text-slate hover:text-ink">More like this →</button>
+                </div>
               </li>
             ))}
           </ul>
         </section>
       )}
+
+      </div>
+
+      {panel && (
+        <aside className="mt-8 rounded-2xl border border-line bg-surface p-5 lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100dvh-48px)] lg:flex-col">
+          <div className="mb-4 flex items-center gap-2">
+            {panel.kind === "copilot" ? <><Sparkles size={16} /><h2 className="font-display text-2xl leading-none">Copilot</h2></>
+              : <h2 className="font-display text-2xl leading-none">Explain</h2>}
+            {panel.kind === "hit" && <button onClick={() => setPanel({ kind: "run" })} className="ml-3 text-xs text-slate hover:text-ink">← How the search ran</button>}
+            <button onClick={() => setPanel(null)} aria-label="Close panel" className="ml-auto rounded p-1 text-slate hover:text-ink"><X size={16} /></button>
+          </div>
+          <div className={`min-h-0 flex-1 ${panel.kind === "copilot" ? "flex flex-col lg:min-h-[560px]" : "overflow-y-auto"}`}>
+            {panel.kind === "copilot" && (
+              <Copilot screen={screen} onPhoto={(c: Cited) => moreLikeThis(c.id, c.dish, c.url)} />
+            )}
+            {panel.kind === "run" && (result && query
+              ? <RunPanel data={result} kind={kind} embedMs={query.kind === "similar" ? null : embedMs} explainBody={explainBody} />
+              : <p className="text-sm text-slate">Run a search first.</p>)}
+            {panel.kind === "hit" && result && (
+              <HitPanel hit={panel.hit} data={result} kind={kind} onMore={() => moreLikeThis(panel.hit.id, panel.hit.dish, panel.hit.url)} />
+            )}
+          </div>
+        </aside>
+      )}
+      </div>
 
       <footer className="mt-16 border-t border-line pt-6 text-xs leading-relaxed text-slate">
         <p>
@@ -241,8 +301,9 @@ function ModelBadge({ model }: { model: ReturnType<typeof useClip>["state"] }) {
   );
 }
 
-function QuerySummary({ query, busy, model, embedMs, result }: {
+function QuerySummary({ query, busy, model, embedMs, result, onExplain }: {
   query: Query | null; busy: "embedding" | "searching" | null; model: ReturnType<typeof useClip>["state"]; embedMs: number | null; result: SearchResult | null;
+  onExplain: () => void;
 }) {
   const status =
     busy === "embedding" ? (model.status === "loading" ? "Waiting for the model to finish loading…" : "Embedding in your browser…")
@@ -273,6 +334,11 @@ function QuerySummary({ query, busy, model, embedMs, result }: {
         )}
         <p className="mt-1 font-mono text-xs text-slate">{status}</p>
       </div>
+      {result && !busy && (
+        <button onClick={onExplain} className="shrink-0 rounded-lg border border-line-2 px-3 py-1.5 text-xs text-ink-2 hover:border-ink">
+          How this search ran
+        </button>
+      )}
     </div>
   );
 }
