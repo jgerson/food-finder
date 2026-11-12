@@ -1,0 +1,22 @@
+# dependencies and build output
+node_modules
+.next
+out
+next-env.d.ts
+*.tsbuildinfo
+
+# secrets: keys live in .env.local and Vercel project settings, never in git
+.env
+.env*.local
+.vercel
+
+# chat logs and AI session transcripts are never committed
+*.chat.md
+*.transcript.*
+chat-logs/
+transcripts/
+.claude/
+
+# local caches
+.cache
+.DS_Store
