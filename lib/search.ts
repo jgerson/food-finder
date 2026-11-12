@@ -36,13 +36,20 @@ export async function searchByVector(vector: number[], opts: { course?: Course; 
   if (opts.course) filters.push(["course", "Eq", opts.course]);
   if (opts.excludeId) filters.push(["id", "NotEq", opts.excludeId]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const res: any = await ns().query({
-    rank_by: ["vector", "ANN", vector],
-    top_k: opts.limit,
-    include_attributes: ATTRS,
-    ...(filters.length ? { filters: filters.length === 1 ? filters[0] : ["And", filters] } : {}),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any);
+  let res: any;
+  try {
+    res = await ns().query({
+      rank_by: ["vector", "ANN", vector],
+      top_k: opts.limit,
+      include_attributes: ATTRS,
+      ...(filters.length ? { filters: filters.length === 1 ? filters[0] : ["And", filters] } : {}),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  } catch (err) {
+    // The namespace doesn't exist until `npm run ingest` has run: show "no matches", not an error.
+    if ((err as { status?: number }).status === 404) return { hits: [], guess: null, ms: Math.round(performance.now() - t0) };
+    throw err;
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hits: Hit[] = (res.rows ?? []).map((r: any) => ({
     id: String(r.id),
