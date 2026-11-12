@@ -11,7 +11,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="bg-paper font-sans text-ink antialiased">
-        <ClerkProvider signInUrl="/sign-in">{children}</ClerkProvider>
+        <ClerkProvider
+          signInUrl="/sign-in"
+          // The Clerk app is shared with TrialScope, so its default title would say "Sign in to trialscope".
+          localization={{ signIn: { start: { title: "Sign in to Food Finder", subtitle: "Welcome back! Please sign in to continue" } } }}
+        >{children}</ClerkProvider>
       </body>
     </html>
   );
