@@ -44,6 +44,10 @@ is built with Next.js for Vercel.
 - **Filters and "more like this".** Each row has a `course` attribute (mains, starters and sides, breakfast,
   desserts) for filtering. "More like this" searches with a stored row's own vector.
 - **The guess.** "Looks like ramen" is a vote among the top 10 matches, with higher-ranked matches counting more.
+- **Sign-in required.** Every page and the search API need a signed-in [Clerk](https://clerk.com) user
+  (`proxy.ts`, plus a check in the API route). There is no sign-up page; accounts are created in Clerk's dashboard.
+  Production runs on `food.trialscope.space` and shares TrialScope's Clerk instance, whose production keys only
+  work on `trialscope.space` and its subdomains; the `vercel.app` addresses redirect there.
 
 ## Project layout
 
@@ -55,6 +59,7 @@ is built with Next.js for Vercel.
 | `lib/search.ts` | Server-side turbopuffer queries: search by vector, more like this, the guess |
 | `app/api/search/route.ts` | `POST /api/search` with `{ vector }` or `{ id }`, plus an optional `course` |
 | `app/page.tsx` | The UI: search box, photo drop, course filters, results grid |
+| `proxy.ts`, `app/sign-in/` | Clerk sign-in check before every request, and the sign-in page |
 | `lib/courses.ts` | Course for each of the 101 dishes |
 
 ## Run it
@@ -70,6 +75,7 @@ You need Node 20 or later, a turbopuffer API key and a Vercel Blob store.
    | `TURBOPUFFER_REGION` | defaults to `aws-us-east-1` |
    | `TURBOPUFFER_NAMESPACE` | defaults to `food101` |
    | `BLOB_READ_WRITE_TOKEN` | Vercel project → Storage → Blob → `.env.local` tab (only `npm run ingest` uses it) |
+   | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | added by connecting a Clerk resource from the Vercel Marketplace to the project |
 
 3. **Load the data.** `npm run ingest` loads 100 photos per dish (10,100 images, about 275 MB of WebP) in roughly
    10 to 20 minutes. Add `-- --dry-run` to read and resize without uploading anything, or `-- --per-class 30` for
@@ -81,7 +87,10 @@ You need Node 20 or later, a turbopuffer API key and a Vercel Blob store.
 1. Import this repo in Vercel (**Add New → Project**). It's detected as Next.js; keep the default settings.
 2. Add `TURBOPUFFER_API_KEY` (mark it sensitive), and `TURBOPUFFER_REGION` and `TURBOPUFFER_NAMESPACE` if you
    changed them. The deployed app doesn't need the Blob token; image URLs are already stored in turbopuffer.
-3. Deploy.
+3. Connect a Clerk resource (Vercel Marketplace) to the project for the two Clerk keys, and add a domain that its
+   production instance covers. Update `AUTHORIZED_ORIGINS` in `proxy.ts` and the redirects in `next.config.ts`
+   to match.
+4. Deploy.
 
 ## Costs
 

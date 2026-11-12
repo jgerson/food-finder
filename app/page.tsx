@@ -1,4 +1,5 @@
 "use client";
+import { UserButton } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { COURSES, COURSE_LABELS, type Course } from "@/lib/courses";
 import { useClip } from "@/lib/use-clip";
@@ -114,7 +115,10 @@ export default function FoodFinder() {
             closest photos among Food-101's 101 dishes.
           </p>
         </div>
-        <ModelBadge model={model} />
+        <div className="flex items-center gap-3">
+          <ModelBadge model={model} />
+          <UserButton />
+        </div>
       </header>
 
       <section className="mt-8 grid gap-3 md:grid-cols-[1fr_auto]">

@@ -1,11 +1,16 @@
 // POST /api/search
 //   { vector: number[512], course?: Course, limit?: number }   search by a query embedding
 //   { id: string, course?: Course, limit?: number }            "more like this" for a stored image
+import { auth } from "@clerk/nextjs/server";
 import { DIM, isCourse, searchById, searchByVector } from "@/lib/search";
 
 const MAX_LIMIT = 48;
 
 export async function POST(req: Request) {
+  // proxy.ts already blocks signed-out requests; this is the second check.
+  const { userId } = await auth();
+  if (!userId) return Response.json({ error: "Sign in required" }, { status: 401 });
+
   let body: Record<string, unknown>;
   try {
     body = await req.json();

@@ -12,6 +12,7 @@
   "author": "Jeremy Gerson <jeremy.gerson@gmail.com>",
   "license": "UNLICENSED",
   "dependencies": {
+    "@clerk/nextjs": "^7.9.26",
     "@huggingface/transformers": "^4.3.2",
     "@turbopuffer/turbopuffer": "^2.14.0",
     "@vercel/blob": "^2.9.0",
