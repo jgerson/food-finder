@@ -41,18 +41,28 @@ is built with Next.js for Vercel.
   against 3,030 indexed ones, the 8-bit model picked the right dish by top-5 vote 75 times, the same as using
   the dataset's own stored vectors as queries. The browser caches the model after the first visit, and photos
   you search with never leave your device; only the vector is sent.
+- **Hybrid search.** Text searches run in one of three modes. *Vector* ranks by CLIP similarity. *Keyword* ranks by
+  BM25 over a `keywords` field: the dish name plus a caption Claude Haiku 5.5 wrote for every photo (visible
+  ingredients, cooking methods, colors, how it's served). *Hybrid*, the default, runs both in one turbopuffer
+  `multi_query` and fuses the lists with reciprocal rank fusion, 1/(60 + rank) per list, so photos near the top of
+  both rise. Photo searches and "more like this" are vector-only, since there's no text to match.
+- **Captions.** Haiku was picked in a 30-photo bake-off against Sonnet 5.5, Gemini 2.5 Flash-Lite, Qwen 3.7 Flash
+  and Haiku without thinking: it invented the fewest ingredients, which matters most for keyword search, since an
+  invented word makes a photo match searches it shouldn't. Captioning all 10,100 photos cost about $3. Captions are a
+  model's reading of a 256-pixel photo and can be wrong; the Explain panel shows them.
 - **Filters and "more like this".** Each row has a `course` attribute (mains, starters and sides, breakfast,
   desserts) for filtering. "More like this" searches with a stored row's own vector.
 - **The guess.** "Looks like ramen" is a vote among the top 10 matches, with higher-ranked matches counting more.
-- **Explain.** "How this search ran" shows the time spent embedding in the browser and in turbopuffer, the cache
-  temperature, billed bytes, the request as sent, the vote behind "Looks like", and on request turbopuffer's query
-  plan with strong vs eventual consistency timings. Selecting a photo shows its rank, cosine similarity and distance,
-  where it sits between the first and last result, and whether it voted on the guess.
-- **Copilot.** Claude (Haiku 5.5 through Vercel AI Gateway by default) with three tools over the same namespace:
-  photos of a named dish, which dishes look alike to CLIP (it averages a dish's photo vectors and counts which dishes
+- **Explain.** "How this search ran" shows the mode, time spent embedding in the browser and in turbopuffer, the
+  cache temperature, billed bytes, how many photos were in both lists, the request as sent, the vote behind "Looks
+  like", and on request turbopuffer's query plan for each subquery with strong vs eventual consistency timings.
+  Selecting a photo shows its vector rank and similarity, its keyword rank and BM25 score, the RRF arithmetic, its
+  caption with the matched words highlighted, and whether it voted on the guess.
+- **Copilot.** Claude (Haiku 5.5 through Vercel AI Gateway by default) with four tools over the same namespace:
+  keyword search over the captions, photos of a named dish, which dishes look alike to CLIP (it averages a dish's photo vectors and counts which dishes
   fill the 200 nearest photos), and more photos like one it can see. It also gets the top 12 results on screen.
-  Answers cite photos as `[R2]` or `[P5]`; clicking one runs "more like this". Free-text CLIP search stays in the
-  browser, so the copilot suggests search words rather than running text searches itself.
+  Answers cite photos as `[R2]` or `[P5]`; clicking one runs "more like this". CLIP text search stays in the
+  browser, so the copilot's own searches are keyword searches.
 - **Langfuse tracing.** Each search, explain and copilot question is one trace, tagged `food-finder`, with the
   Clerk user id: the search step, each turbopuffer call (request without the vector, server time, cache, billed
   bytes, top ids and distances) and the HTTP call under it; for the copilot, each model call (prompt, response,
@@ -100,7 +110,9 @@ You need Node 20 or later, a turbopuffer API key and a Vercel Blob store.
 
 3. **Load the data.** `npm run ingest` loads 100 photos per dish (10,100 images, about 275 MB of WebP) in roughly
    10 to 20 minutes. Add `-- --dry-run` to read and resize without uploading anything, or `-- --per-class 30` for
-   a smaller set. Re-running overwrites rather than duplicates.
+   a smaller set. Re-running overwrites rather than duplicates. This loads photos and vectors only; the captions
+   for keyword search were added afterwards with Claude Haiku 5.5 as a one-off (patched onto the same rows as
+   `caption` and a BM25-indexed `keywords` field), and that script isn't part of this repo.
 4. **Start it.** `npm run dev` and open <http://localhost:3000>. The first visit downloads the model (150 MB).
 
 ## Deploy to Vercel

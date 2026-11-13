@@ -2,7 +2,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { after } from "next/server";
 import { copilotEnabled, runCopilot, type CopilotEvent, type ScreenContext } from "@/lib/copilot";
-import { isCourse } from "@/lib/search";
+import { isCourse, isMode } from "@/lib/search";
 import { flushLangfuse, newTrace } from "@/lib/langfuse";
 import { requireUserId } from "@/lib/session";
 
@@ -54,12 +54,15 @@ function cleanScreen(raw: unknown): ScreenContext | null {
   const s = raw as Record<string, unknown>;
   const hits = Array.isArray(s.hits) ? s.hits.slice(0, 12).flatMap((h) => {
     const x = h as Record<string, unknown>;
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
     return typeof x.id === "string" && /^[a-z]+-\d+$/.test(x.id) && typeof x.dish === "string" && typeof x.url === "string"
-      && x.url.startsWith("https://") && typeof x.similarity === "number"
-      ? [{ id: x.id, dish: x.dish.slice(0, 60), url: x.url, similarity: x.similarity }] : [];
+      && x.url.startsWith("https://")
+      ? [{ id: x.id, dish: x.dish.slice(0, 60), url: x.url, caption: typeof x.caption === "string" ? x.caption.slice(0, 300) : null,
+        similarity: num(x.similarity), keywordRank: num(x.keywordRank) }] : [];
   }) : [];
   return {
     query: typeof s.query === "string" ? s.query.slice(0, 200) : "a search",
+    mode: isMode(s.mode) ? s.mode : "vector",
     course: isCourse(s.course) ? s.course : null,
     guess: typeof s.guess === "string" ? s.guess.slice(0, 60) : null,
     hits,

@@ -9,7 +9,7 @@ import { tracedFetch } from "./traced-fetch";
 
 export const DIM = 512;
 export const NAMESPACE = process.env.TURBOPUFFER_NAMESPACE ?? "food101";
-const ATTRS = ["url", "dish", "label", "course"];
+const ATTRS = ["url", "dish", "label", "course", "caption", "keywords"];
 
 let client: Turbopuffer | null = null;
 
@@ -26,9 +26,24 @@ function ns() {
   return client.namespace(NAMESPACE);
 }
 
+export type Mode = "vector" | "keyword" | "hybrid";
+export const MODES: Mode[] = ["hybrid", "vector", "keyword"];
+export const RRF_K = 60;
+
+/** One ranked list's view of a photo: its place in that list and the list's raw score. */
+export type Signal = { rank: number; of: number; score: number };
+
 export type Hit = {
   id: string; url: string; dish: string; label: string; course: Course;
-  rank: number; distance: number; similarity: number;
+  caption: string | null;   // AI-generated description (Claude Haiku 5.5), null until captioned
+  keywords: string | null;  // what BM25 searches: dish name, visible ingredients, methods, colors, serving, caption
+  rank: number;             // final position
+  vector: (Signal & { similarity: number }) | null; // score = cosine distance
+  bm25: Signal | null;      // score = BM25
+  fused: number | null;     // RRF score, hybrid only
+  terms: string[];          // query words found in keywords
+  // Kept for the parts of the app that only know vector search: the vector similarity, or null.
+  similarity: number | null;
 };
 export type Vote = { dish: string; votes: number; score: number; ranks: number[] };
 export type Guess = { dish: string; votes: number; of: number };
@@ -36,76 +51,134 @@ export type Guess = { dish: string; votes: number; of: number };
 /** How turbopuffer ran a search, for the Explain panel. */
 export type RunInfo = {
   namespace: string;
+  mode: Mode;
   request: Record<string, unknown>; // as sent, with the query vector shown as "[512 floats]"
   filters: string[];                // in words
   topK: number;
+  candidates: number;               // rows asked of each list before fusing
   roundMs: number;                  // round trip from the Vercel function
   serverMs: number | null;          // turbopuffer's own time
   cache: string | null;             // turbopuffer's cache temperature: hot, warm or cold
   billedBytesQueried: number | null;
   approxRows: number | null;        // rows in the namespace
+  listSizes: { vector?: number; keyword?: number };
 };
-export type SearchResult = { hits: Hit[]; guess: Guess | null; votes: Vote[]; ms: number; run: RunInfo };
+export type SearchResult = { hits: Hit[]; guess: Guess | null; votes: Vote[]; ms: number; run: RunInfo; terms: string[] };
 
 export function isCourse(v: unknown): v is Course {
   return typeof v === "string" && (COURSES as readonly string[]).includes(v);
 }
+export function isMode(v: unknown): v is Mode {
+  return typeof v === "string" && (MODES as string[]).includes(v);
+}
 
 type Row = Record<string, unknown> & { id: string | number; $dist?: number };
 
-/** Nearest dishes to `vector`, optionally limited to one course and excluding one id. */
-export async function searchByVector(vector: number[], opts: { course?: Course; excludeId?: string; limit: number }): Promise<SearchResult> {
+const STOP = new Set(["a", "an", "and", "the", "of", "with", "in", "on", "or", "to", "for", "some", "dish", "food", "plate"]);
+/** Query words worth highlighting: lowercase, 2+ letters, no stopwords. */
+export function queryTerms(text: string): string[] {
+  return [...new Set(text.toLowerCase().match(/[a-z][a-z-]+/g) ?? [])].filter((w) => !STOP.has(w)).slice(0, 12);
+}
+
+/**
+ * Search the namespace. `vector` ranks by CLIP similarity, `keyword` by BM25 over the caption keywords, and `hybrid`
+ * runs both in one multi_query and fuses them with reciprocal rank fusion: score = Σ 1/(60 + rank) over the lists a
+ * photo appears in. Photo queries and "more like this" have no text, so they're vector-only.
+ */
+export async function search(q: { vector?: number[]; text?: string; mode: Mode; course?: Course; excludeId?: string; limit: number }): Promise<SearchResult> {
+  const mode: Mode = q.text ? (q.vector ? q.mode : "keyword") : "vector";
   const t0 = performance.now();
   const filters: unknown[] = [];
   const words: string[] = [];
-  if (opts.course) { filters.push(["course", "Eq", opts.course]); words.push(`course = ${opts.course}`); }
-  if (opts.excludeId) { filters.push(["id", "NotEq", opts.excludeId]); words.push(`id ≠ ${opts.excludeId} (the photo itself)`); }
-  const request: Record<string, unknown> = {
-    rank_by: ["vector", "ANN", vector],
-    top_k: opts.limit,
-    include_attributes: ATTRS,
+  if (q.course) { filters.push(["course", "Eq", q.course]); words.push(`course = ${q.course}`); }
+  if (q.excludeId) { filters.push(["id", "NotEq", q.excludeId]); words.push(`id ≠ ${q.excludeId} (the photo itself)`); }
+  // In hybrid, each list returns more candidates than shown, so a photo ranked lower in one list can still be fused in.
+  const candidates = mode === "hybrid" ? Math.min(100, q.limit * 2) : q.limit;
+  const base: Record<string, unknown> = {
+    top_k: candidates, include_attributes: ATTRS,
     ...(filters.length ? { filters: filters.length === 1 ? filters[0] : ["And", filters] } : {}),
   };
+  const vec = { ...base, rank_by: ["vector", "ANN", q.vector] };
+  const kw = { ...base, rank_by: ["keywords", "BM25", q.text ?? ""] };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let res: any;
+  let res: any = {};
+  let lists: { vector?: Row[]; keyword?: Row[] } = {};
   const [approxRows] = await Promise.all([
     rowCount(),
     (async () => {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        res = await tpCall("query", NAMESPACE, request, () => ns().query(request as any), { label: "search" });
+        if (mode === "hybrid") {
+          const req = { queries: [vec, kw] };
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          res = await tpCall("multi_query", NAMESPACE, req, () => ns().multiQuery(req as any), { label: "search" });
+          lists = { vector: res.results?.[0]?.rows ?? [], keyword: res.results?.[1]?.rows ?? [] };
+        } else {
+          const req = mode === "vector" ? vec : kw;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          res = await tpCall("query", NAMESPACE, req, () => ns().query(req as any), { label: "search" });
+          lists = { [mode]: res.rows ?? [] };
+        }
       } catch (err) {
         // The namespace doesn't exist until the data is loaded: show "no matches", not an error.
-        if ((err as { status?: number }).status === 404) res = { rows: [] };
-        else throw err;
+        if ((err as { status?: number }).status !== 404) throw err;
       }
     })(),
   ]);
   const roundMs = Math.round(performance.now() - t0);
-  const hits: Hit[] = ((res.rows ?? []) as Row[]).map((r, i) => {
-    const distance = Number(r.$dist ?? 1); // cosine_distance = 1 - cosine similarity
-    return { id: String(r.id), url: String(r.url), dish: String(r.dish), label: String(r.label), course: r.course as Course,
-      rank: i + 1, distance, similarity: 1 - distance };
+
+  const docs = new Map<string, { row: Row; vector: Hit["vector"]; bm25: Hit["bm25"] }>();
+  for (const [name, rows] of Object.entries(lists) as ["vector" | "keyword", Row[]][]) {
+    rows.forEach((row, i) => {
+      const id = String(row.id);
+      const d = docs.get(id) ?? { row, vector: null, bm25: null };
+      const score = Number(row.$dist ?? 0);
+      if (name === "vector") d.vector = { rank: i + 1, of: rows.length, score, similarity: 1 - score };
+      else d.bm25 = { rank: i + 1, of: rows.length, score };
+      docs.set(id, d);
+    });
+  }
+  const terms = q.text ? queryTerms(q.text) : [];
+  const fusedOf = (d: { vector: Hit["vector"]; bm25: Hit["bm25"] }) =>
+    (d.vector ? 1 / (RRF_K + d.vector.rank) : 0) + (d.bm25 ? 1 / (RRF_K + d.bm25.rank) : 0);
+  const ordered = [...docs.entries()]
+    .map(([id, d]) => ({ id, ...d, fused: fusedOf(d) }))
+    .sort((a, b) => (mode === "hybrid" ? b.fused - a.fused : 0));
+  const hits: Hit[] = ordered.slice(0, q.limit).map((d, i) => {
+    const r = d.row;
+    const keywords = typeof r.keywords === "string" ? r.keywords : null;
+    const lower = (keywords ?? "").toLowerCase();
+    return {
+      id: d.id, url: String(r.url), dish: String(r.dish), label: String(r.label), course: r.course as Course,
+      caption: typeof r.caption === "string" ? r.caption : null, keywords,
+      rank: i + 1, vector: d.vector, bm25: d.bm25, fused: mode === "hybrid" ? d.fused : null,
+      terms: terms.filter((t) => new RegExp(`\\b${t.replace(/-/g, "\\-")}`).test(lower)),
+      similarity: d.vector?.similarity ?? null,
+    };
   });
   const votes = tally(hits);
   const top = votes[0];
+  const short = (x: Record<string, unknown>) => ({ ...x, rank_by: shortRankBy(x.rank_by) });
   return {
-    hits,
-    votes,
+    hits, votes, terms,
     guess: top ? { dish: top.dish, votes: top.votes, of: Math.min(10, hits.length) } : null,
     ms: roundMs,
     run: {
-      namespace: NAMESPACE,
-      request: { ...request, rank_by: shortRankBy(request.rank_by), include_attributes: ATTRS },
-      filters: words,
-      topK: opts.limit,
-      roundMs,
+      namespace: NAMESPACE, mode,
+      request: mode === "hybrid" ? { queries: [short(vec), short(kw)] } : short(mode === "vector" ? vec : kw),
+      filters: words, topK: q.limit, candidates, roundMs,
       serverMs: num(res.performance?.server_total_ms),
       cache: typeof res.performance?.cache_temperature === "string" ? res.performance.cache_temperature : null,
       billedBytesQueried: num(res.billing?.billable_logical_bytes_queried),
       approxRows,
+      listSizes: { vector: lists.vector?.length, keyword: lists.keyword?.length },
     },
   };
+}
+
+/** Nearest photos to `vector` (photo queries and "more like this"). */
+export function searchByVector(vector: number[], opts: { course?: Course; excludeId?: string; limit: number }): Promise<SearchResult> {
+  return search({ vector, mode: "vector", ...opts });
 }
 
 /** A stored photo's vector, or null if the id isn't in the namespace. */
@@ -153,34 +226,41 @@ async function rowCount(): Promise<number | null> {
   return rows.n;
 }
 
-/** turbopuffer's query plan for a search, and the same search timed with strong and eventual consistency. */
+/**
+ * turbopuffer's query plan for a search (one plan per subquery in hybrid), and the same search timed with strong and
+ * eventual consistency.
+ */
 export async function explainSearch(request: Record<string, unknown>) {
   const n = ns();
-  // turbopuffer builds the vector index in the background; until it exists there's no plan to show (it answers 400
-  // "index does not exist"). The consistency timings still work, so report that instead of failing.
-  let plan: string | null = null;
-  let planNote: string | null = null;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const r: any = await tpCall("explain", NAMESPACE, request, () => n.explainQuery(request as any), { label: "explain-query" });
-    plan = String(r.plan_text ?? "");
-  } catch (e) {
-    const msg = String((e as Error).message ?? e);
-    if (!/index does not exist/i.test(msg)) throw e;
-    planNote = "turbopuffer hasn't built a vector index for this namespace yet, so there's no query plan to show. " +
-      "Until the index exists, searches compare against the stored vectors directly. Try again later.";
-  }
+  const subqueries = Array.isArray(request.queries) ? (request.queries as Record<string, unknown>[]) : [request];
+  const multi = subqueries.length > 1;
+  // turbopuffer builds the vector index in the background; until it exists it answers 400 "index does not exist"
+  // for a vector plan. The other plans and the consistency timings still work, so report that instead of failing.
+  const plans = await Promise.all(subqueries.map(async (q) => {
+    const label = Array.isArray(q.rank_by) && q.rank_by[1] === "BM25" ? "Keyword (BM25)" : "Vector (ANN)";
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r: any = await tpCall("explain", NAMESPACE, q, () => n.explainQuery(q as any), { label: "explain-query" });
+      return { label, plan: String(r.plan_text ?? ""), note: null as string | null };
+    } catch (e) {
+      if (!/index does not exist/i.test(String((e as Error).message ?? e))) throw e;
+      return { label, plan: null, note: "turbopuffer hasn't built this index yet, so there's no plan to show. Until it " +
+        "exists, the search reads the stored data directly. Try again later." };
+    }
+  }));
   const timed = async (level: "strong" | "eventual") => {
     const req = { ...request, consistency: { level } };
     const t0 = performance.now();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res: any = await tpCall("query", NAMESPACE, req, () => n.query(req as any), { label: `consistency-${level}` });
+    const res: any = await tpCall(multi ? "multi_query" : "query", NAMESPACE, req,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): Promise<unknown> => (multi ? n.multiQuery(req as any) : n.query(req as any)), { label: `consistency-${level}` });
     return { level, roundMs: Math.round(performance.now() - t0), serverMs: num(res.performance?.server_total_ms) };
   };
   // One after the other, so the two timings don't compete for the same connection.
   const strong = await timed("strong");
   const eventual = await timed("eventual");
-  return { plan, planNote, strong, eventual };
+  return { plans, strong, eventual };
 }
 
 // ---------------------------------------------------------------- copilot lookups

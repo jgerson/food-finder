@@ -3,8 +3,9 @@
 // turbopuffer call nested under the tool that made it.
 //
 // Free-text CLIP search runs in the browser (the model is too large for a server function), so the copilot works from
-// what turbopuffer can answer server-side: photos of a named dish, dishes that look alike (from averaged vectors),
-// more photos like one it can see, and the results currently on screen, which the browser sends along.
+// what turbopuffer can answer server-side: BM25 keyword search over the AI-written captions, photos of a named dish,
+// dishes that look alike (from averaged vectors), more photos like one it can see, and the results currently on
+// screen, which the browser sends along.
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { getVercelOidcToken } from "@vercel/oidc";
@@ -13,7 +14,7 @@ import { assistantMessage, promptOf, usageOf } from "./langfuse";
 import { costOf, priceOf } from "./pricing";
 import { tracedFetch } from "./traced-fetch";
 import { COURSE_LABELS, courseOf, dishName, type Course } from "./courses";
-import { photosOf, searchById, similarDishes, type Photo } from "./search";
+import { isCourse, photosOf, search, searchById, similarDishes, type Mode, type Photo } from "./search";
 import { LABELS } from "./labels";
 
 export const COPILOT_MODEL = process.env.COPILOT_MODEL
@@ -24,9 +25,10 @@ export const copilotEnabled = Boolean(process.env.ANTHROPIC_API_KEY || process.e
 /** The results on screen when the question was asked, sent by the browser. */
 export type ScreenContext = {
   query: string; // e.g. 'text "crispy fried noodles"', 'a photo', 'more like Ramen'
+  mode: Mode;
   course: Course | null;
   guess: string | null;
-  hits: { id: string; dish: string; url: string; similarity: number }[];
+  hits: { id: string; dish: string; url: string; caption: string | null; similarity: number | null; keywordRank: number | null }[];
 };
 
 export type Cited = { id: string; dish: string; url: string };
@@ -42,6 +44,22 @@ export type CopilotEvent =
   | { type: "done"; seconds: number };
 
 const TOOLS: Anthropic.Tool[] = [
+  {
+    name: "keyword_search",
+    description: "BM25 keyword search over each photo's keywords: the dish name plus a caption Claude Haiku wrote from " +
+      "the photo (visible ingredients, cooking methods, colors, how it's served). Use it to find photos by what's in " +
+      "them, e.g. 'fried egg', 'avocado', 'skewers', 'green sauce'. Matches words, not meaning, so try synonyms if " +
+      "nothing comes back. Optionally limit to one course.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        course: { type: "string", enum: ["main", "starter", "breakfast", "dessert"] },
+        top_k: { type: "integer", description: "3 to 10. Defaults to 8." },
+      },
+      required: ["query"],
+    },
+  },
   {
     name: "show_dish_photos",
     description: "Get example photos of one or more Food-101 dishes, by their exact label. Use it to show the user what " +
@@ -89,13 +107,20 @@ const SYSTEM = (screen: ScreenContext | null) => `You are the Food Finder copilo
 from the Food-101 dataset (100 photos of each of 101 dishes) stored in turbopuffer as 512-number OpenCLIP ViT-B-32 \
 vectors. The user searches by typing a description or uploading a photo; the CLIP model runs in their browser.
 
-What you can do: explain the results on screen and why they ranked as they did, show photos of named dishes, find \
-which dishes look alike to the model, and find more photos like one you can see. You can't run free-text searches \
-yourself; if the user wants one, suggest the words to type in the search box.
+Every photo also has a caption that Claude Haiku wrote from the photo, and a keywords field (dish name plus the \
+caption's ingredients, methods, colors and serving) that turbopuffer indexes for BM25 keyword search. Captions are a \
+model's reading of a small photo and can be wrong.
 
-How search works, for explanations: text and photos share one vector space, so a query lands near photos with similar \
-content. Results are ranked by cosine similarity. Text-to-photo similarities are low (about 0.25 to 0.35) and \
-photo-to-photo ones high (0.6 to 0.95); only the order within one search matters. "Looks like X" is a vote among the \
+What you can do: explain the results on screen and why they ranked as they did, search captions by keyword, show \
+photos of named dishes, find which dishes look alike to the model, and find more photos like one you can see. You \
+can't run CLIP text searches yourself (that model runs in the user's browser); for "looks like" questions, suggest \
+words to type in the search box.
+
+How search works, for explanations: text searches run in one of three modes. Vector: CLIP puts text and photos in \
+one vector space and ranks by cosine similarity (text-to-photo similarities are low, about 0.25 to 0.35, and \
+photo-to-photo ones high, 0.6 to 0.95; only the order matters). Keyword: BM25 over the keywords field. Hybrid (the \
+default): both lists from one turbopuffer multi_query, fused with reciprocal rank fusion, 1/(60 + rank) per list, so \
+photos high in both lists rise. Photo searches and "more like this" are vector-only. "Looks like X" is a vote among the \
 top 10 results where higher ranks count more. Each dish has a course (${Object.values(COURSE_LABELS).join(", ")}) used \
 as a filter; that grouping is the app's, not Food-101's.
 
@@ -107,9 +132,11 @@ Rules:
 The 101 dish labels: ${LABELS.join(", ")}.
 
 ${screen && screen.hits.length
-    ? `On screen now: results for ${screen.query}${screen.course ? `, filtered to ${COURSE_LABELS[screen.course]}` : ""}. \
+    ? `On screen now: ${screen.mode} search results for ${screen.query}${screen.course ? `, filtered to ${COURSE_LABELS[screen.course]}` : ""}. \
 ${screen.guess ? `The app's guess: ${screen.guess}. ` : ""}Top results:\n${screen.hits.map((h, i) =>
-      `[R${i + 1}] ${h.dish} (similarity ${h.similarity.toFixed(3)})`).join("\n")}`
+      `[R${i + 1}] ${h.dish}${h.similarity != null ? `, vector similarity ${h.similarity.toFixed(3)}` : ", not in the vector list"}` +
+      `${screen.mode !== "vector" ? (h.keywordRank != null ? `, keyword rank ${h.keywordRank}` : ", no keyword match") : ""}` +
+      `${h.caption ? `. Caption: ${h.caption}` : ""}`).join("\n")}`
     : "Nothing is on screen yet."}`;
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh";
@@ -143,7 +170,7 @@ function reasoningOf(content: Anthropic.ContentBlock[]): string | undefined {
 
 // Langfuse observation names for the tools. Keep them stable: dashboards and evaluators filter on them.
 const TOOL_OBSERVATION: Record<string, string> = {
-  show_dish_photos: "show-dish-photos", similar_dishes: "similar-dishes", more_like_photo: "more-like-photo",
+  keyword_search: "keyword-search", show_dish_photos: "show-dish-photos", similar_dishes: "similar-dishes", more_like_photo: "more-like-photo",
 };
 
 /** Answer one question. */
@@ -191,6 +218,16 @@ async function loop(messages: Anthropic.MessageParam[], screen: ScreenContext | 
     const t1 = performance.now();
     const step = (results: number, summary: string) =>
       emit({ type: "step", tool: name, input, results, ms: performance.now() - t1, reasoning, summary });
+    if (name === "keyword_search") {
+      const query = String(input.query ?? "").trim().slice(0, 200);
+      if (!query) return "Empty query.";
+      const course = isCourse(input.course) ? input.course : undefined;
+      const k = Math.min(10, Math.max(3, Number(input.top_k) || 8));
+      const r = await search({ text: query, mode: "keyword", course, limit: k });
+      step(r.hits.length, `${r.hits.length} photos matching “${query}”`);
+      return r.hits.map((h) => `[${tag(h)}] ${h.dish}, BM25 ${h.bm25?.score.toFixed(2)}${h.caption ? `. Caption: ${h.caption}` : ""}`).join("\n")
+        || "No photos match those words. Try other words or synonyms.";
+    }
     if (name === "show_dish_photos") {
       const dishes = ((input.dishes as string[]) ?? []).filter((d) => LABELS.includes(d)).slice(0, 4);
       const n = Math.min(4, Math.max(1, Number(input.per_dish) || 3));
@@ -219,7 +256,7 @@ async function loop(messages: Anthropic.MessageParam[], screen: ScreenContext | 
       const r = await searchById(target.id, { course, limit: k });
       const hits = r?.hits ?? [];
       step(hits.length, `${hits.length} photos like ${t} (${target.dish})`);
-      return hits.map((h) => `[${tag(h)}] ${h.dish}, similarity ${h.similarity.toFixed(3)}`).join("\n") || "No results.";
+      return hits.map((h) => `[${tag(h)}] ${h.dish}, similarity ${(h.vector?.similarity ?? 0).toFixed(3)}${h.caption ? `. Caption: ${h.caption}` : ""}`).join("\n") || "No results.";
     }
     return `Unknown tool ${name}.`;
   }

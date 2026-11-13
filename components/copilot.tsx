@@ -13,7 +13,7 @@ interface Turn {
 }
 
 const TOOL_NAMES: Record<string, string> = {
-  show_dish_photos: "Dish photos", similar_dishes: "Similar dishes", more_like_photo: "More like a photo",
+  keyword_search: "Keyword search", show_dish_photos: "Dish photos", similar_dishes: "Similar dishes", more_like_photo: "More like a photo",
 };
 
 export function Copilot({ screen, onPhoto }: { screen: ScreenContext | null; onPhoto: (c: Cited) => void }) {
@@ -28,7 +28,7 @@ export function Copilot({ screen, onPhoto }: { screen: ScreenContext | null; onP
 
   const suggestions = screen?.hits.length
     ? ["Why did these results come up?", `What else looks like ${(screen.guess ?? screen.hits[0].dish).toLowerCase()}?`, "Which of these is the odd one out, and why?"]
-    : ["What does bibimbap look like?", "Which dishes does the model confuse with pho?", "Show me three desserts side by side"];
+    : ["Find dishes topped with a fried egg", "Which dishes does the model confuse with pho?", "Show me three desserts side by side"];
 
   async function ask(q: string) {
     if (!q.trim()) { setInputError("Type a question first."); return; }

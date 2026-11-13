@@ -4,9 +4,9 @@ import { Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { COURSES, COURSE_LABELS, type Course } from "@/lib/courses";
 import { useClip } from "@/lib/use-clip";
-import type { Hit, SearchResult } from "@/lib/search";
+import type { Hit, Mode, SearchResult } from "@/lib/search";
 import type { Cited, ScreenContext } from "@/lib/copilot";
-import { HitPanel, RunPanel, type QueryKind } from "@/components/explain";
+import { HitPanel, MODE_LABEL, RunPanel, type QueryKind } from "@/components/explain";
 import { Copilot } from "@/components/copilot";
 
 type Panel = { kind: "run" } | { kind: "hit"; hit: Hit } | { kind: "copilot" } | null;
@@ -31,6 +31,9 @@ export default function FoodFinder() {
   const [panel, setPanel] = useState<Panel>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const embedMsRef = useRef<number | null>(null);
+  // Search mode for text queries. Photo searches and "more like this" are always vector-only.
+  const [mode, setMode] = useState<Mode>("hybrid");
+  const modeRef = useRef<Mode>("hybrid");
 
   const run = useCallback(async (q: Query, c: Course | null) => {
     setBusy("searching");
@@ -38,7 +41,9 @@ export default function FoodFinder() {
     try {
       // `query` describes the search for the trace in Langfuse; the vector is never recorded there.
       const query = q.kind === "similar" ? { kind: "similar" } : q.kind === "text" ? { kind: "text", text: q.text, embedMs: embedMsRef.current } : { kind: "photo", embedMs: embedMsRef.current };
-      const body = q.kind === "similar" ? { id: q.id, course: c, query } : { vector: q.vector, course: c, query };
+      const body = q.kind === "similar" ? { id: q.id, course: c, query }
+        : q.kind === "text" ? { vector: q.vector, text: q.text, mode: modeRef.current, course: c, query }
+        : { vector: q.vector, course: c, query };
       const res = await fetch("/api/search", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Search failed (${res.status})`);
@@ -97,6 +102,12 @@ export default function FoodFinder() {
     void run(next, course);
   };
 
+  const pickMode = (m: Mode) => {
+    setMode(m);
+    modeRef.current = m;
+    if (query?.kind === "text") void run(query, course); // same query, new mode: no re-embedding needed
+  };
+
   const pickCourse = (c: Course | null) => {
     setCourse(c);
     if (query) void run(query, c); // same query, new filter: no re-embedding needed
@@ -125,10 +136,14 @@ export default function FoodFinder() {
     query: query.kind === "text" ? `the text "${query.text}"` : query.kind === "image" ? "a photo the user uploaded" : `more like a photo of ${query.dish}`,
     course,
     guess: result.guess?.dish ?? null,
-    hits: result.hits.slice(0, 12).map((h) => ({ id: h.id, dish: h.dish, url: h.url, similarity: h.similarity })),
+    mode: result.run.mode,
+    hits: result.hits.slice(0, 12).map((h) => ({ id: h.id, dish: h.dish, url: h.url, caption: h.caption,
+      similarity: h.vector?.similarity ?? null, keywordRank: h.bm25?.rank ?? null })),
   } : null;
   const kind: QueryKind = query?.kind === "image" ? "photo" : query?.kind === "similar" ? "similar" : "text";
-  const explainBody = query?.kind === "similar" ? { id: query.id, course } : query ? { vector: query.vector, course } : {};
+  const explainBody = query?.kind === "similar" ? { id: query.id, course }
+    : query?.kind === "text" ? { vector: query.vector, text: query.text, mode, course }
+    : query ? { vector: query.vector, course } : {};
 
   return (
     <main className={`mx-auto px-5 pb-16 pt-10 ${panel ? "max-w-[1400px]" : "max-w-6xl"}`}>
@@ -187,12 +202,27 @@ export default function FoodFinder() {
         </div>
       </section>
 
-      <nav className="mt-4 flex flex-wrap gap-2" aria-label="Filter by course">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+      <nav className="flex flex-wrap gap-2" aria-label="Filter by course">
         <Chip active={course === null} onClick={() => pickCourse(null)}>All</Chip>
         {COURSES.map((c) => (
           <Chip key={c} active={course === c} onClick={() => pickCourse(c)}>{COURSE_LABELS[c]}</Chip>
         ))}
       </nav>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate">{query && query.kind !== "text" ? "Photo searches use vectors only" : "Text search"}</span>
+        <div role="radiogroup" aria-label="Search mode" className="inline-flex rounded-full border border-line-2 p-0.5">
+          {(["hybrid", "vector", "keyword"] as Mode[]).map((m) => (
+            <button key={m} role="radio" aria-checked={mode === m} disabled={!!query && query.kind !== "text"}
+              title={{ hybrid: "Vector and keyword results fused with RRF", vector: "CLIP similarity only", keyword: "BM25 over the AI-written captions only" }[m]}
+              onClick={() => pickMode(m)}
+              className={`rounded-full px-3 py-1 text-xs disabled:opacity-40 ${mode === m ? "bg-ink text-paper" : "text-ink-2 hover:text-ink"}`}>
+              {MODE_LABEL[m]}
+            </button>
+          ))}
+        </div>
+      </div>
+      </div>
 
       {error && <p role="alert" className="mt-4 text-sm text-red-700">{error}</p>}
 
@@ -224,8 +254,11 @@ export default function FoodFinder() {
                   <img src={h.url} alt={h.dish} loading={i < 8 ? "eager" : "lazy"} className="aspect-square w-full object-cover" />
                   <div className="flex items-baseline justify-between gap-2 px-3 pt-2.5">
                     <span className="truncate font-medium text-ink">{h.dish}</span>
-                    <span className="shrink-0 font-mono text-xs text-slate" title="Cosine similarity">{h.similarity.toFixed(3)}</span>
+                    <span className="shrink-0 font-mono text-xs text-slate" title={result.run.mode === "keyword" ? "BM25 score" : result.run.mode === "hybrid" ? "Fused (RRF) score" : "Cosine similarity"}>
+                      {result.run.mode === "keyword" ? h.bm25?.score.toFixed(2) : result.run.mode === "hybrid" ? h.fused?.toFixed(4) : h.similarity?.toFixed(3)}
+                    </span>
                   </div>
+                  {h.caption && <p className="line-clamp-2 px-3 pt-1 text-xs leading-snug text-slate">{h.caption}</p>}
                 </button>
                 <div className="flex justify-between px-3 pb-3 pt-1 text-xs">
                   <button onClick={() => setPanel({ kind: "hit", hit: h })} className="text-slate hover:text-ink">Why #{h.rank}?</button>
