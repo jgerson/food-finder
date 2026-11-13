@@ -240,14 +240,15 @@ export default function FoodFinder() {
       </div>
 
       {panel && (
-        <aside className="mt-8 rounded-2xl border border-line bg-surface p-5 lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100dvh-48px)] lg:flex-col">
+        <aside className={`mt-8 flex flex-col rounded-2xl border border-line bg-surface p-5 lg:sticky lg:top-6 ${panel.kind === "copilot"
+          ? "h-[75dvh] lg:h-[max(480px,calc(100dvh-200px))]" : "lg:max-h-[calc(100dvh-48px)]"}`}>
           <div className="mb-4 flex items-center gap-2">
             {panel.kind === "copilot" ? <><Sparkles size={16} /><h2 className="font-display text-2xl leading-none">Copilot</h2></>
               : <h2 className="font-display text-2xl leading-none">Explain</h2>}
             {panel.kind === "hit" && <button onClick={() => setPanel({ kind: "run" })} className="ml-3 text-xs text-slate hover:text-ink">← How the search ran</button>}
             <button onClick={() => setPanel(null)} aria-label="Close panel" className="ml-auto rounded p-1 text-slate hover:text-ink"><X size={16} /></button>
           </div>
-          <div className={`min-h-0 flex-1 ${panel.kind === "copilot" ? "flex flex-col lg:min-h-[560px]" : "overflow-y-auto"}`}>
+          <div className={`min-h-0 flex-1 ${panel.kind === "copilot" ? "flex flex-col" : "overflow-y-auto"}`}>
             {panel.kind === "copilot" && (
               <Copilot screen={screen} onPhoto={(c: Cited) => moreLikeThis(c.id, c.dish, c.url)} />
             )}

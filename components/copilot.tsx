@@ -79,8 +79,9 @@ export function Copilot({ screen, onPhoto }: { screen: ScreenContext | null; onP
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto pb-4">
+    // Only the conversation scrolls; the question box stays pinned at the bottom of the panel.
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-4 pr-1">
         {!turns.length && (
           <div>
             <p className="text-[14px] leading-relaxed text-ink-2">
