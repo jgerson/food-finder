@@ -9,6 +9,14 @@ import { tracedFetch } from "./traced-fetch";
 
 export const DIM = 512;
 export const NAMESPACE = process.env.TURBOPUFFER_NAMESPACE ?? "food101";
+
+// Photos live under <IMAGE_BASE_URL>/food101/<split>/<n>.webp (a public Hugging Face dataset repo). When it's set,
+// photo links are built from the row id, so moving the photos never needs a rewrite in turbopuffer.
+const IMAGE_BASE = process.env.IMAGE_BASE_URL?.replace(/\/+$/, "");
+export function photoUrl(id: string, stored: unknown): string {
+  const m = IMAGE_BASE ? /^([a-z]+)-(\d+)$/.exec(id) : null;
+  return m ? `${IMAGE_BASE}/food101/${m[1]}/${m[2]}.webp` : String(stored);
+}
 const ATTRS = ["url", "dish", "label", "course", "caption", "keywords"];
 
 let client: Turbopuffer | null = null;
@@ -149,7 +157,7 @@ export async function search(q: { vector?: number[]; text?: string; mode: Mode; 
     const keywords = typeof r.keywords === "string" ? r.keywords : null;
     const lower = (keywords ?? "").toLowerCase();
     return {
-      id: d.id, url: String(r.url), dish: String(r.dish), label: String(r.label), course: r.course as Course,
+      id: d.id, url: photoUrl(d.id, r.url), dish: String(r.dish), label: String(r.label), course: r.course as Course,
       caption: typeof r.caption === "string" ? r.caption : null, keywords,
       rank: i + 1, vector: d.vector, bm25: d.bm25, fused: mode === "hybrid" ? d.fused : null,
       terms: terms.filter((t) => new RegExp(`\\b${t.replace(/-/g, "\\-")}`).test(lower)),
@@ -266,7 +274,7 @@ export async function explainSearch(request: Record<string, unknown>) {
 // ---------------------------------------------------------------- copilot lookups
 
 export type Photo = { id: string; url: string; dish: string; label: string; course: Course };
-const photoOf = (r: Row): Photo => ({ id: String(r.id), url: String(r.url), dish: String(r.dish), label: String(r.label), course: r.course as Course });
+const photoOf = (r: Row): Photo => ({ id: String(r.id), url: photoUrl(String(r.id), r.url), dish: String(r.dish), label: String(r.label), course: r.course as Course });
 
 /** A few photos of one dish (by Food-101 label), in id order. */
 export async function photosOf(label: string, n: number): Promise<Photo[]> {
