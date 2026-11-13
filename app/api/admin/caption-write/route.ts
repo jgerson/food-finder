@@ -6,6 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { getVercelOidcToken } from "@vercel/oidc";
 import Turbopuffer from "@turbopuffer/turbopuffer";
+import { put } from "@vercel/blob";
 import { dishName } from "@/lib/courses";
 
 export const maxDuration = 120;
@@ -27,7 +28,8 @@ function authorized(req: Request) {
   return expected.length >= 32 && got.length === expected.length && timingSafeEqual(Buffer.from(got), Buffer.from(expected));
 }
 
-type Item = { id: string; label: string; url: string };
+// `image` (base64 WebP) re-uploads a photo whose Blob upload went missing during the original load, then captions it.
+type Item = { id: string; label: string; url: string; image?: string };
 type Parsed = { ingredients?: string[]; method?: string[]; colors?: string[]; serving?: string; caption?: string };
 
 function parse(text: string): Parsed | null {
@@ -57,13 +59,22 @@ export async function POST(req: Request) {
   let inTokens = 0, outTokens = 0;
   const done = await Promise.all(items.map(async (it) => {
     if (!/^validation-\d+$/.test(it.id) || !it.url.startsWith("https://7gsffjbxpqrsgimi.public.blob.vercel-storage.com/")) return null;
+    if (it.image) {
+      try {
+        await put(`food101/validation/${it.id.split("-")[1]}.webp`, Buffer.from(it.image, "base64"), {
+          access: "public", contentType: "image/webp", addRandomSuffix: false, allowOverwrite: true, cacheControlMaxAge: 31536000,
+        });
+      } catch {
+        return null; // the client re-sends missing ones
+      }
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const msg = await llm.messages.create({
           model: MODEL, max_tokens: 1500,
           messages: [{ role: "user", content: [
             // Bytes, not a URL: AI Gateway sometimes routes to a provider that won't fetch image URLs.
-            { type: "image", source: { type: "base64", media_type: "image/webp", data: await imageBase64(it.url) } },
+            { type: "image", source: { type: "base64", media_type: "image/webp", data: it.image ?? await imageBase64(it.url) } },
             { type: "text", text: PROMPT(dishName(it.label)) },
           ] }],
         });
