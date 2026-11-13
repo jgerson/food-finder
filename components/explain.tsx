@@ -37,8 +37,8 @@ export function RunPanel({ data, kind, embedMs, explainBody }: {
 
       <div className="text-[13px] leading-relaxed text-ink-2">
         <p>
-          Asked for the top {r.topK} by cosine distance with an approximate nearest-neighbor (ANN) index, which
-          avoids comparing against every one of the stored vectors.
+          Asked for the top {r.topK} by cosine distance as an approximate nearest-neighbor (ANN) query. Once
+          turbopuffer has built its vector index, that avoids comparing against every stored vector.
           {r.filters.length ? ` Filtered to: ${r.filters.join("; ")}.` : " No filters."}
         </p>
       </div>
@@ -83,7 +83,7 @@ function Votes({ data }: { data: SearchResult }) {
   );
 }
 
-type Explained = { plan: string; strong: Timing; eventual: Timing };
+type Explained = { plan: string | null; planNote: string | null; strong: Timing; eventual: Timing };
 type Timing = { roundMs: number; serverMs: number | null };
 
 /** On request: turbopuffer's query plan, and the same search timed with strong and eventual consistency. */
@@ -129,7 +129,9 @@ function PlanAndConsistency({ body }: { body: Record<string, unknown> }) {
       </div>
       <div>
         <h4 className="font-medium text-ink">Query plan</h4>
-        <pre className="mt-1 max-h-64 overflow-auto rounded-lg bg-accent-soft p-3 font-mono text-[11.5px] leading-relaxed text-ink-2">{out.plan || "(empty)"}</pre>
+        {out.plan != null
+          ? <pre className="mt-1 max-h-64 overflow-auto rounded-lg bg-accent-soft p-3 font-mono text-[11.5px] leading-relaxed text-ink-2">{out.plan || "(empty)"}</pre>
+          : <p className="mt-1 text-[12.5px] leading-relaxed text-slate">{out.planNote}</p>}
       </div>
     </div>
   );

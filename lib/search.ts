@@ -156,8 +156,20 @@ async function rowCount(): Promise<number | null> {
 /** turbopuffer's query plan for a search, and the same search timed with strong and eventual consistency. */
 export async function explainSearch(request: Record<string, unknown>) {
   const n = ns();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const plan: any = await tpCall("explain", NAMESPACE, request, () => n.explainQuery(request as any), { label: "explain-query" });
+  // turbopuffer builds the vector index in the background; until it exists there's no plan to show (it answers 400
+  // "index does not exist"). The consistency timings still work, so report that instead of failing.
+  let plan: string | null = null;
+  let planNote: string | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r: any = await tpCall("explain", NAMESPACE, request, () => n.explainQuery(request as any), { label: "explain-query" });
+    plan = String(r.plan_text ?? "");
+  } catch (e) {
+    const msg = String((e as Error).message ?? e);
+    if (!/index does not exist/i.test(msg)) throw e;
+    planNote = "turbopuffer hasn't built a vector index for this namespace yet, so there's no query plan to show. " +
+      "Until the index exists, searches compare against the stored vectors directly. Try again later.";
+  }
   const timed = async (level: "strong" | "eventual") => {
     const req = { ...request, consistency: { level } };
     const t0 = performance.now();
@@ -168,7 +180,7 @@ export async function explainSearch(request: Record<string, unknown>) {
   // One after the other, so the two timings don't compete for the same connection.
   const strong = await timed("strong");
   const eventual = await timed("eventual");
-  return { plan: String(plan.plan_text ?? ""), strong, eventual };
+  return { plan, planNote, strong, eventual };
 }
 
 // ---------------------------------------------------------------- copilot lookups

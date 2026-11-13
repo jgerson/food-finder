@@ -33,7 +33,7 @@ export async function POST(req: Request) {
         };
         obs.update({ input: { similarTo: byId ?? undefined, course: course ?? "all", limit } });
         const r = await explainSearch(request);
-        obs.update({ output: { strong: r.strong, eventual: r.eventual, planChars: r.plan.length } });
+        obs.update({ output: { strong: r.strong, eventual: r.eventual, planChars: r.plan?.length ?? 0, planNote: r.planNote } });
         return r;
       }, { asType: "chain" }));
     return out ? Response.json(out) : Response.json({ error: "Nothing to explain." }, { status: 400 });
