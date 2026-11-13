@@ -54,7 +54,8 @@ export async function POST(req: Request) {
   }
   return Response.json({
     read: rows.length, written: upsert.length, missingKeywords: rows.filter((r) => !r.keywords).length,
-    next: rows.length === n ? rows.at(-1)!.id : null,
+    // Stop only on an empty page: turbopuffer can return fewer rows than asked (response size limits).
+    next: rows.length ? rows.at(-1)!.id : null,
     embeddingTokens: w?.performance?.embedding_tokens ?? null, rowsUpserted: w?.rows_upserted ?? null,
   });
 }
