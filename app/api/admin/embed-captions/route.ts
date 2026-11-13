@@ -1,11 +1,15 @@
-// TEMPORARY (branch caption-bakeoff only; never merged to main): copies each photo's keywords text into a new
-// `description` attribute that turbopuffer embeds itself (native embedding, voyage/voyage-4-lite), for meaning-based
-// caption search. Pages through the namespace by id; the client calls it until `next` is null. Guarded by CAPTION_TOKEN.
+// TEMPORARY (branch caption-bakeoff only; never merged to main): copies food101 into a new namespace, food101-v2,
+// whose schema adds `description` (the keywords text) embedded by turbopuffer itself (native embedding,
+// voyage/voyage-4-lite). turbopuffer only allows an embedded attribute on a namespace's first write, so the rows are
+// copied rather than patched. Pages by id; the client calls it until `next` is null. Guarded by CAPTION_TOKEN.
 import { timingSafeEqual } from "node:crypto";
 import Turbopuffer from "@turbopuffer/turbopuffer";
 
 export const maxDuration = 120;
+const SOURCE = "food101";
+const TARGET = "food101-v2";
 const EMBED_MODEL = "voyage/voyage-4-lite";
+const ATTRS = ["url", "dish", "label", "course", "caption", "keywords"];
 
 function authorized(req: Request) {
   const expected = process.env.CAPTION_TOKEN ?? "";
@@ -17,29 +21,40 @@ export async function POST(req: Request) {
   if (!authorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
   const { after, size } = (await req.json()) as { after?: string; size?: number };
   const n = Math.min(Math.max(Number(size) || 200, 1), 500);
-  const ns = new Turbopuffer({ apiKey: process.env.TURBOPUFFER_API_KEY!, region: process.env.TURBOPUFFER_REGION || "aws-us-east-1" })
-    .namespace(process.env.TURBOPUFFER_NAMESPACE ?? "food101");
+  const tp = new Turbopuffer({ apiKey: process.env.TURBOPUFFER_API_KEY!, region: process.env.TURBOPUFFER_REGION || "aws-us-east-1" });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const page: any = await ns.query({
-    rank_by: ["id", "asc"], top_k: n, include_attributes: ["keywords"],
+  const page: any = await tp.namespace(SOURCE).query({
+    rank_by: ["id", "asc"], top_k: n, include_attributes: [...ATTRS, "vector"],
     ...(after ? { filters: ["id", "Gt", after] } : {}),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
-  const rows = (page.rows ?? []) as { id: string; keywords?: string }[];
-  const patch = rows.filter((r) => typeof r.keywords === "string" && r.keywords).map((r) => ({ id: r.id, description: r.keywords }));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (page.rows ?? []) as any[];
+  const upsert = rows.map((r) => ({
+    id: r.id, vector: r.vector, url: r.url, dish: r.dish, label: r.label, course: r.course,
+    caption: r.caption ?? "", keywords: r.keywords ?? r.dish, description: r.keywords ?? r.dish,
+  }));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let w: any = null;
-  if (patch.length) {
-    w = await ns.write({
-      patch_rows: patch,
-      schema: { description: { type: "string", embed: EMBED_MODEL, filterable: false } },
+  if (upsert.length) {
+    w = await tp.namespace(TARGET).write({
+      upsert_rows: upsert,
+      distance_metric: "cosine_distance",
+      schema: {
+        url: { type: "string", filterable: false },
+        dish: { type: "string", filterable: false },
+        label: { type: "string" },
+        course: { type: "string" },
+        caption: { type: "string", filterable: false },
+        keywords: { type: "string", full_text_search: true, filterable: false },
+        description: { type: "string", embed: EMBED_MODEL, filterable: false },
+      },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
   }
   return Response.json({
-    read: rows.length, written: patch.length, missingKeywords: rows.length - patch.length,
+    read: rows.length, written: upsert.length, missingKeywords: rows.filter((r) => !r.keywords).length,
     next: rows.length === n ? rows.at(-1)!.id : null,
-    embeddingTokens: w?.performance?.embedding_tokens ?? w?.billing?.embedding_tokens ?? null,
-    billing: w?.billing ?? null,
+    embeddingTokens: w?.performance?.embedding_tokens ?? null, rowsUpserted: w?.rows_upserted ?? null,
   });
 }
