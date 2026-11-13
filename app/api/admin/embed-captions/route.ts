@@ -19,7 +19,18 @@ function authorized(req: Request) {
 
 export async function POST(req: Request) {
   if (!authorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
-  const { after, size } = (await req.json()) as { after?: string; size?: number };
+  const { after, size, stats, ids } = (await req.json()) as { after?: string; size?: number; stats?: boolean; ids?: string[] };
+  if (stats || ids) {
+    const tp0 = new Turbopuffer({ apiKey: process.env.TURBOPUFFER_API_KEY!, region: process.env.TURBOPUFFER_REGION || "aws-us-east-1" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const count = async (name: string) => { const r: any = await tp0.namespace(name).query({ aggregate_by: { n: ["Count"] } } as any); return r.aggregations?.n ?? null; };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const present = async (name: string, list: string[]) => { const r: any = await tp0.namespace(name).query({ filters: ["id", "In", list], top_k: list.length, include_attributes: ["label"] } as any); return (r.rows ?? []).map((x: { id: string }) => x.id); };
+    return Response.json({
+      counts: { [SOURCE]: await count(SOURCE), [TARGET]: await count(TARGET) },
+      ...(ids ? { presentInSource: await present(SOURCE, ids.slice(0, 1000)) } : {}),
+    });
+  }
   const n = Math.min(Math.max(Number(size) || 200, 1), 500);
   const tp = new Turbopuffer({ apiKey: process.env.TURBOPUFFER_API_KEY!, region: process.env.TURBOPUFFER_REGION || "aws-us-east-1" });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
