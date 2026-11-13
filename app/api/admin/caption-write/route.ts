@@ -41,6 +41,12 @@ function parse(text: string): Parsed | null {
   }
 }
 
+async function imageBase64(url: string): Promise<string> {
+  const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!r.ok) throw new Error(`image ${r.status}`);
+  return Buffer.from(await r.arrayBuffer()).toString("base64");
+}
+
 const list = (v: unknown, n: number) => (Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, n).map((x) => x.trim()) : []);
 
 export async function POST(req: Request) {
@@ -56,7 +62,8 @@ export async function POST(req: Request) {
         const msg = await llm.messages.create({
           model: MODEL, max_tokens: 1500,
           messages: [{ role: "user", content: [
-            { type: "image", source: { type: "url", url: it.url } },
+            // Bytes, not a URL: AI Gateway sometimes routes to a provider that won't fetch image URLs.
+            { type: "image", source: { type: "base64", media_type: "image/webp", data: await imageBase64(it.url) } },
             { type: "text", text: PROMPT(dishName(it.label)) },
           ] }],
         });
