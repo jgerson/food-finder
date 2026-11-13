@@ -63,7 +63,8 @@ is built with Next.js for Vercel.
   caption with the matched words highlighted, and whether it voted on the guess.
 - **Copilot.** Claude (Haiku 5.5 through Vercel AI Gateway by default) with four tools over the same namespace:
   keyword search over the captions, photos of a named dish, which dishes look alike to CLIP (it averages a dish's
-  photo vectors and counts which dishes fill the 200 nearest photos), and more photos like one it can see. It also gets the top 12 results on screen.
+  photo vectors and counts which dishes fill the 200 nearest photos), and more photos like one it can see. It
+  also gets the top 12 results on screen.
   Answers cite photos as `[R2]` or `[P5]`; clicking one runs "more like this". CLIP text search stays in the
   browser, so the copilot's own searches are keyword searches.
 - **Langfuse tracing.** Each search, explain and copilot question is one trace, tagged `food-finder`, with the
