@@ -4,7 +4,7 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
 // Branch caption-bakeoff only: the temporary caption endpoint has its own token check.
-const isPublic = createRouteMatcher(["/sign-in(.*)", "/api/admin/caption", "/api/admin/caption-write", "/api/admin/embed-captions", "/api/admin/load-rows"]);
+const isPublic = createRouteMatcher(["/sign-in(.*)", "/api/admin/caption", "/api/admin/caption-write", "/api/admin/embed-captions", "/api/admin/load-rows", "/api/admin/hf-upload"]);
 
 // Clerk's production keys belong to the trialscope.space instance, so production runs on a subdomain of it.
 const AUTHORIZED_ORIGINS = ["https://food.trialscope.space"];
