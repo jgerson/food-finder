@@ -17,17 +17,20 @@ is built with Next.js for Vercel.
 ## How it works
 
 ```
- Loading (once, on your laptop)                     Searching (every query)
- ─────────────────────────────                      ───────────────────────
- Food-101 on Hugging Face                           Text or photo
- (image + label + CLIP vector)                           │
-        │                                                ▼
-        ├─ image ──► resize to WebP ──► Vercel Blob   CLIP model in a Web Worker (in the browser)
-        │                                                │  512-d vector
-        └─ vector + label + course ──► turbopuffer ◄── /api/search (Vercel function, holds the key)
-                                                         │
-                                                         ▼
-                                                   Top 24 matches + "Looks like …"
+ Loading (once)                                       Searching (every query)
+ ──────────────                                       ───────────────────────
+ Food-101 on Hugging Face                             Text or photo
+ (image + label + CLIP vector)                             │
+        │                                                  ▼
+        ├─ image ──► resize to WebP ──► Vercel Blob     CLIP model in a Web Worker (in the browser)
+        │                                  │               │  512-d vector (+ the text, for keyword search)
+        │            Claude Haiku 5.5 ◄────┘               ▼
+        │            caption + keywords ──┐             /api/search (Vercel function, holds the key)
+        │                                 ▼                │  one multi_query: vector ANN + BM25,
+        └─ vector + label + course ──► turbopuffer ◄───────┘  fused with RRF in hybrid mode
+                                                           │
+                                                           ▼
+                                                     Top 24 matches + "Looks like …"
 ```
 
 - **No embedding at load time.** Each Food-101 row already carries a 512-dimension
@@ -59,8 +62,8 @@ is built with Next.js for Vercel.
   Selecting a photo shows its vector rank and similarity, its keyword rank and BM25 score, the RRF arithmetic, its
   caption with the matched words highlighted, and whether it voted on the guess.
 - **Copilot.** Claude (Haiku 5.5 through Vercel AI Gateway by default) with four tools over the same namespace:
-  keyword search over the captions, photos of a named dish, which dishes look alike to CLIP (it averages a dish's photo vectors and counts which dishes
-  fill the 200 nearest photos), and more photos like one it can see. It also gets the top 12 results on screen.
+  keyword search over the captions, photos of a named dish, which dishes look alike to CLIP (it averages a dish's
+  photo vectors and counts which dishes fill the 200 nearest photos), and more photos like one it can see. It also gets the top 12 results on screen.
   Answers cite photos as `[R2]` or `[P5]`; clicking one runs "more like this". CLIP text search stays in the
   browser, so the copilot's own searches are keyword searches.
 - **Langfuse tracing.** Each search, explain and copilot question is one trace, tagged `food-finder`, with the
@@ -131,6 +134,8 @@ You need Node 20 or later, a turbopuffer API key and a Vercel Blob store.
 - **turbopuffer:** the Launch plan's $16/month minimum covers this easily.
 - **Vercel:** the Hobby plan (free, non-commercial) includes 1 GB of Blob storage; this uses about 275 MB.
 - **Embedding:** none. The dataset comes pre-embedded and queries are embedded in the visitor's browser.
+- **Captions:** a one-time cost of about $3.20 for all 10,100 photos with Claude Haiku 5.5 through AI Gateway
+  (about 600 tokens in and 500 out per photo; Haiku's thinking is most of the output).
 
 ## Data and credits
 
