@@ -33,14 +33,15 @@ export async function POST(req: Request) {
     const t0 = performance.now();
     try {
       const msg = await llm.messages.create({
-        model, max_tokens: 400,
+        model, max_tokens: 1500,
         messages: [{ role: "user", content: [
           { type: "image", source: { type: "url", url: it.url } },
           { type: "text", text: PROMPT(dishName(it.label)) },
         ] }],
       });
       const text = msg.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("").trim();
-      return { id: it.id, text, ms: Math.round(performance.now() - t0), inTokens: msg.usage.input_tokens, outTokens: msg.usage.output_tokens };
+      return { id: it.id, text, ms: Math.round(performance.now() - t0), inTokens: msg.usage.input_tokens, outTokens: msg.usage.output_tokens,
+        stop: msg.stop_reason, blocks: msg.content.map((b) => b.type) };
     } catch (e) {
       return { id: it.id, error: String((e as Error).message).slice(0, 300) };
     }
